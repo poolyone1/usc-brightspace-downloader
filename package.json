@@ -9,7 +9,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json && chmod +x dist/cli.js",
-    "test": "tsc -p tsconfig.test.json && node --test .test-dist/test/*.test.js",
+    "test": "tsc -p tsconfig.test.json && node --test .test-dist/test/*.test.js .test-dist/test/tui/*.test.js",
     "check": "npm run build && npm test"
   },
   "engines": {
@@ -17,9 +17,12 @@
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "@types/react": "^19.2.18",
     "typescript": "^5.9.0"
   },
   "dependencies": {
-    "playwright": "^1.62.1"
+    "ink": "^7.1.1",
+    "playwright": "^1.62.1",
+    "react": "^19.2.8"
   }
 }

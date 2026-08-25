@@ -1,4 +1,4 @@
-# USC Brightspace Downloader — browser-session proof of concept
+# USC Brightspace Downloader — browser session + TUI proof of concept
 
 只读、本地运行的 USC Brightspace 文件下载器。默认方案会打开一个隔离的 Chromium 窗口，由你亲自完成 USC NetID 和 Duo 登录；工具只保存 `brightspace.usc.edu` 的会话数据，不读取或保存用户名、密码、Microsoft/Duo 会话。
 
@@ -13,8 +13,10 @@
 - 浏览器会话只允许 `brightspace.usc.edu` cookie/local storage。
 - 会话以 AES-256-GCM 加密，随机密钥放在 macOS Keychain；磁盘不保存明文会话。
 - OAuth + refresh token 后端仍保留，但必须显式选择。
+- 提供课程列表、课程文件树、文件详情、同步计划和同步进度多级 TUI。
+- TUI 显示已同步、新文件、线上更新三种主状态，并支持文件级选择和课程级下载目录。
 
-TUI 和自定义课程/模块映射尚未实现；它们可以复用当前的认证与同步引擎。
+普通 `usc-bs` 命令和 TUI 共用同一个同步引擎、认证后端、路径规则和 manifest。
 
 ## 安装
 
@@ -52,6 +54,36 @@ usc-bs -y
 
 以后直接运行 `usc-bs` 即可。若 USC/D2L 使会话过期，交互式运行会重新打开登录窗口。
 
+## 多级 TUI
+
+```bash
+usc-bs tui
+```
+
+界面层级：
+
+```text
+课程列表 → 课程文件树 → 文件详情
+    └────→ 同步计划 → 同步进度 → 同步结果
+```
+
+主要按键：
+
+```text
+↑/↓       移动
+Enter     进入课程、展开模块或查看文件详情
+Space     选择课程、模块或文件
+d         为当前课程设置下载根目录
+f         强制下载当前文件
+1/2/3     显示全部 / 新文件 / 线上更新
+s         查看同步计划
+r         刷新本地同步状态
+Esc       返回上一级
+q         退出；同步中为安全停止
+```
+
+状态规则：本地没有 manifest 记录或文件缺失为“新文件”；本地存在但 Brightspace 修改时间变化为“线上更新”；本地存在且线上修改时间一致为“已同步”。
+
 ## 常用选项
 
 ```bash
@@ -68,6 +100,7 @@ usc-bs auth logout
 ```text
 ~/Library/Application Support/usc-bs/config.json
 ~/Library/Application Support/usc-bs/browser-session.enc
+~/Library/Application Support/usc-bs/tui-profile.json
 <下载目录>/.usc-bs-manifest.json
 ```
 

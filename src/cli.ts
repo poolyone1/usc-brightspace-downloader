@@ -1,22 +1,19 @@
 #!/usr/bin/env node
 
 import path from "node:path";
-import { configure, loadConfig, requireConfig } from "./config.js";
+import { configure, loadConfig } from "./config.js";
 import type { AuthMethod } from "./config.js";
 import type { BrightspaceApi } from "./brightspace.js";
-import { BrightspaceClient, BrightspaceHttpError } from "./brightspace.js";
-import {
-  BrowserSessionBrightspaceClient,
-  BrowserSessionExpiredError,
-  loginBrowserSession,
-} from "./browser-session.js";
+import { BrightspaceClient } from "./brightspace.js";
+import { loginBrowserSession } from "./browser-session.js";
 import { deleteBrowserSession, hasBrowserSession } from "./browser-session-store.js";
-import { authStatus, createAccessTokenProvider, login, logout } from "./oauth.js";
+import { isBrowserConfig, resolveConfig, useConfiguredClient } from "./app-runtime.js";
+import { authStatus, login, logout } from "./oauth.js";
 import { withAppLock } from "./lock.js";
 import { scan, syncAll } from "./sync.js";
-import type { AppConfig, BrowserSessionAppConfig, SyncOptions } from "./types.js";
+import type { AppConfig, SyncOptions } from "./types.js";
 
-type Command = "sync" | "configure" | "login" | "logout" | "status" | "doctor" | "help";
+type Command = "sync" | "tui" | "configure" | "login" | "logout" | "status" | "doctor" | "help";
 
 interface ParsedArguments {
   command: Command;
@@ -25,16 +22,13 @@ interface ParsedArguments {
   method?: AuthMethod;
 }
 
-function isBrowserConfig(config: AppConfig): config is BrowserSessionAppConfig {
-  return config.auth.method === "browser-session";
-}
-
 function usage(): void {
   console.log(`USC Brightspace file downloader (read-only proof of concept)
 
 Usage:
   usc-bs                              Scan and sync all accessible courses
   usc-bs sync [options]               Same as the default command
+  usc-bs tui                          Open the multi-level course/file manager
   usc-bs configure [--method METHOD]  Configure browser-session (default) or OAuth
   usc-bs auth login                   One-time manual USC NetID + Duo login
   usc-bs auth status                  Show local configuration/auth status
@@ -72,7 +66,7 @@ function parseArguments(argv: string[]): ParsedArguments {
     command = authCommand as Command;
     index = 2;
   } else if (first && !first.startsWith("-")) {
-    const known = ["sync", "configure", "login", "logout", "status", "doctor", "help"];
+    const known = ["sync", "tui", "configure", "login", "logout", "status", "doctor", "help"];
     if (!known.includes(first)) throw new Error(`Unknown command: ${first}`);
     command = first as Command;
     index = 1;
@@ -113,12 +107,6 @@ function parseArguments(argv: string[]): ParsedArguments {
   };
 }
 
-async function resolveConfig(method?: AuthMethod): Promise<AppConfig> {
-  const existing = await loadConfig();
-  if (existing && method && existing.auth.method !== method) return configure(method);
-  return existing || requireConfig(method || "browser-session");
-}
-
 async function doctor(client: BrightspaceApi, config: AppConfig): Promise<void> {
   const versions = await client.versions();
   console.log(`API versions: LP ${versions.lp}, LE ${versions.le}`);
@@ -132,49 +120,6 @@ async function doctor(client: BrightspaceApi, config: AppConfig): Promise<void> 
   console.log(`Content access: ${result.topics.length} visible file topics`);
   for (const warning of result.warnings) console.warn(`Warning: ${warning}`);
   console.log("Authentication, enrollment and TOC access succeeded. A sync exercises file downloads.");
-}
-
-function browserAuthFailure(error: unknown): boolean {
-  return error instanceof BrowserSessionExpiredError ||
-    (error instanceof BrightspaceHttpError && [401, 403].includes(error.status)) ||
-    /browser session (is missing|key is missing|could not be decrypted)/i.test((error as Error).message);
-}
-
-async function useBrowserClient<T>(
-  config: BrowserSessionAppConfig,
-  action: (client: BrowserSessionBrightspaceClient) => Promise<T>,
-): Promise<T> {
-  let retried = false;
-  while (true) {
-    let client: BrowserSessionBrightspaceClient | null = null;
-    try {
-      client = await BrowserSessionBrightspaceClient.create(config);
-      const versions = await client.versions();
-      await client.courses(versions.lp); // Explicitly validate restored authentication.
-      return await action(client);
-    } catch (error) {
-      if (retried || !process.stdin.isTTY || !browserAuthFailure(error)) throw error;
-      retried = true;
-      console.warn("Saved Brightspace session is missing or expired; manual login is required.");
-      await loginBrowserSession(config);
-    } finally {
-      await client?.close().catch(() => undefined);
-    }
-  }
-}
-
-async function useConfiguredClient<T>(
-  config: AppConfig,
-  action: (client: BrightspaceApi) => Promise<T>,
-): Promise<T> {
-  if (isBrowserConfig(config)) return useBrowserClient(config, action);
-  const tokenProvider = await createAccessTokenProvider(config);
-  const client = new BrightspaceClient(config.baseUrl, tokenProvider);
-  try {
-    return await action(client);
-  } finally {
-    await client.close();
-  }
 }
 
 async function showStatus(config: AppConfig): Promise<void> {
@@ -192,7 +137,7 @@ async function showStatus(config: AppConfig): Promise<void> {
 async function explicitLogin(config: AppConfig): Promise<void> {
   if (isBrowserConfig(config)) {
     await loginBrowserSession(config);
-    await useBrowserClient(config, async (client) => {
+    await useConfiguredClient(config, async (client) => {
       const versions = await client.versions();
       const courses = await client.courses(versions.lp);
       console.log(`Browser-session login succeeded. Found ${courses.length} accessible course offerings.`);
@@ -245,6 +190,13 @@ async function main(): Promise<void> {
     if (parsed.command === "login") return explicitLogin(config);
     if (parsed.command === "doctor") {
       await useConfiguredClient(config, (client) => doctor(client, config));
+      return;
+    }
+    if (parsed.command === "tui") {
+      await useConfiguredClient(config, async (client) => {
+        const { runTui } = await import("./tui/run.js");
+        await runTui(client, effectiveConfig);
+      });
       return;
     }
     await useConfiguredClient(config, async (client) => {
