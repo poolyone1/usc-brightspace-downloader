@@ -15,6 +15,8 @@
 
 TUI 和自定义课程/模块目录映射不在这个 oneshot 中；它们会在 API 链路实测通过后复用同一个同步引擎。
 
+无法取得 USC OAuth 应用凭据时，可参考 [`docs/browser-session-design.md`](docs/browser-session-design.md) 中的手动登录一次并加密保存 Brightspace 会话方案。该方案当前位于 `browser-session-poc` 分支，尚未声称通过 USC 实测。
+
 ## USC 需要注册的 OAuth 应用
 
 必须先从 USC Brightspace 管理员处取得 `client_id` 和 `client_secret`：
