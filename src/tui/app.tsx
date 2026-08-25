@@ -66,15 +66,15 @@ function marker(keys: string[], selection: Set<string>): string {
 }
 
 function statusBadge(status: FileSyncStatus): { text: string; color: string } {
-  if (status === "synced") return { text: "[已同步]", color: "green" };
-  if (status === "remote-updated") return { text: "[线上更新]", color: "yellow" };
-  return { text: "[新文件]", color: "cyan" };
+  if (status === "synced") return { text: "[Synced]", color: "green" };
+  if (status === "remote-updated") return { text: "[Remote updated]", color: "yellow" };
+  return { text: "[New]", color: "cyan" };
 }
 
 function formatDate(value: string | null): string {
-  if (!value) return "未知";
+  if (!value) return "Unknown";
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString("en-US");
 }
 
 function shortPath(value: string, width = 64): string {
@@ -187,9 +187,9 @@ export function TuiApp({
       setCourses((current) => current.map((course) =>
         course.catalog.course.id === courseId ? { ...course, outputDir, statuses } : course
       ));
-      setNotice(`下载目录已设置为 ${outputDir}`);
+      setNotice(`Download directory set to ${outputDir}`);
     } catch (error) {
-      setNotice(`目录设置失败：${(error as Error).message}`);
+      setNotice(`Unable to set download directory: ${(error as Error).message}`);
     } finally {
       setDirectoryInput(null);
     }
@@ -208,12 +208,12 @@ export function TuiApp({
       if (event.type === "file-skipped") {
         delete active[identity];
         completed += 1;
-        recent = [`跳过 ${label}`, ...recent].slice(0, 5);
+        recent = [`Skipped ${label}`, ...recent].slice(0, 5);
       }
       if (event.type === "file-saved") {
         delete active[identity];
         completed += 1;
-        recent = [`完成 ${label}`, ...recent].slice(0, 5);
+        recent = [`Saved ${label}`, ...recent].slice(0, 5);
       }
       if (event.type === "file-failed") {
         delete active[identity];
@@ -381,14 +381,14 @@ export function TuiApp({
   if (directoryInput) {
     return (
       <Box flexDirection="column">
-        <Header>设置课程下载目录</Header>
+        <Header>Set course download directory</Header>
         <Box marginTop={1} flexDirection="column">
-          <Text>输入绝对路径或以 ~/ 开头的路径：</Text>
+          <Text>Enter an absolute path or a path beginning with ~/:</Text>
           <Box borderStyle="round" borderColor="yellow" paddingX={1}>
             <Text>{directoryInput.value}</Text><Text inverse> </Text>
           </Box>
         </Box>
-        <Footer>Enter 保存  Esc 取消</Footer>
+        <Footer>Enter Save  Esc Cancel</Footer>
       </Box>
     );
   }
@@ -398,7 +398,7 @@ export function TuiApp({
     const visible = courses.slice(start, start + height);
     return (
       <Box flexDirection="column">
-        <Header>课程列表</Header>
+        <Header>Course list</Header>
         <Box flexDirection="column" marginTop={1}>
           {visible.map((item, offset) => {
             const index = start + offset;
@@ -410,17 +410,17 @@ export function TuiApp({
                   {index === courseCursor ? "›" : " "} {marker(keys, selection)} {item.catalog.course.code} — {item.catalog.course.name}
                 </Text>
                 <Text dimColor>
-                  {"    "}已同步 {counts.synced} · 新文件 {counts.new} · 线上更新 {counts["remote-updated"]}
+                  {"    "}Synced {counts.synced} · New {counts.new} · Remote updated {counts["remote-updated"]}
                 </Text>
                 <Text dimColor>{"    "}{shortPath(item.outputDir)}</Text>
                 {item.catalog.warning ? <Text color="red">{"    "}{item.catalog.warning}</Text> : null}
               </Box>
             );
           })}
-          {courses.length === 0 ? <Text color="yellow">没有可访问的课程。</Text> : null}
+          {courses.length === 0 ? <Text color="yellow">No accessible courses.</Text> : null}
         </Box>
         {notice ? <Text color="yellow">{notice}</Text> : null}
-        <Footer>↑↓ 移动  Enter 文件树  Space 选择课程  d 目录  s 同步计划  r 刷新  q 退出</Footer>
+        <Footer>↑↓ Move  Enter File tree  Space Select course  d Directory  s Sync plan  r Refresh  q Quit</Footer>
       </Box>
     );
   }
@@ -430,8 +430,8 @@ export function TuiApp({
     const visible = treeRows.slice(start, start + height);
     return (
       <Box flexDirection="column">
-        <Header>{`${activeCourse.catalog.course.code} › 文件树`}</Header>
-        <Text dimColor>目录：{shortPath(activeCourse.outputDir)} · 筛选：{filter === "all" ? "全部" : filter === "new" ? "新文件" : "线上更新"}</Text>
+        <Header>{`${activeCourse.catalog.course.code} › File tree`}</Header>
+        <Text dimColor>Directory: {shortPath(activeCourse.outputDir)} · Filter: {filter === "all" ? "All" : filter === "new" ? "New" : "Remote updated"}</Text>
         <Box flexDirection="column" marginTop={1}>
           {visible.map((row, offset) => {
             const index = start + offset;
@@ -449,22 +449,22 @@ export function TuiApp({
             return (
               <Box key={row.key}>
                 <Text inverse={index === treeCursor}>
-                  {index === treeCursor ? "›" : " "} {indent}  {selectionMark} {row.topic.title}{forced ? " [强制]" : ""}
+                  {index === treeCursor ? "›" : " "} {indent}  {selectionMark} {row.topic.title}{forced ? " [Forced]" : ""}
                 </Text>
                 <Text color={badge.color}> {badge.text}</Text>
               </Box>
             );
           })}
-          {treeRows.length === 0 ? <Text color="yellow">当前筛选下没有文件。</Text> : null}
+          {treeRows.length === 0 ? <Text color="yellow">No files match the current filter.</Text> : null}
         </Box>
-        <Footer>↑↓ 移动  Enter 展开/详情  Space 选择  f 强制  1 全部  2 新文件  3 线上更新  d 目录  s 同步  Esc 返回</Footer>
+        <Footer>↑↓ Move  Enter Expand/Details  Space Select  f Force  1 All  2 New  3 Updated  d Directory  s Sync  Esc Back</Footer>
       </Box>
     );
   }
 
   if (screen === "detail" && activeCourse && detailTopicId !== null) {
     const topic = activeCourse.catalog.topics.find((item) => item.topicId === detailTopicId);
-    if (!topic) return <Text color="red">文件不存在。</Text>;
+    if (!topic) return <Text color="red">File not found.</Text>;
     const status = activeCourse.statuses.get(topic.topicId) || "new";
     const badge = statusBadge(status);
     const keyValue = topicKey(topic.course.id, topic.topicId);
@@ -472,17 +472,17 @@ export function TuiApp({
       <Box flexDirection="column">
         <Header>{`${activeCourse.catalog.course.code} › ${topic.modulePath.join(" › ")} › ${topic.title}`}</Header>
         <Box flexDirection="column" marginTop={1} borderStyle="round" paddingX={1}>
-          <Text>状态          <Text color={badge.color}>{badge.text}</Text></Text>
-          <Text>课程          {topic.course.code} — {topic.course.name}</Text>
-          <Text>模块          {topic.modulePath.join(" / ") || "课程根目录"}</Text>
-          <Text>目标根目录    {activeCourse.outputDir}</Text>
-          <Text>线上修改时间  {formatDate(topic.remoteModified)}</Text>
-          <Text>Topic ID      {topic.topicId}</Text>
-          <Text>本次选择      {selection.has(keyValue) ? "是" : "否"}</Text>
-          <Text>强制下载      {forceKeys.has(keyValue) ? "是" : "否"}</Text>
-          <Text>冲突策略      保留本地文件，远端版本另存</Text>
+          <Text>Status            <Text color={badge.color}>{badge.text}</Text></Text>
+          <Text>Course            {topic.course.code} — {topic.course.name}</Text>
+          <Text>Module            {topic.modulePath.join(" / ") || "Course root"}</Text>
+          <Text>Destination       {activeCourse.outputDir}</Text>
+          <Text>Remote modified   {formatDate(topic.remoteModified)}</Text>
+          <Text>Topic ID          {topic.topicId}</Text>
+          <Text>Selected          {selection.has(keyValue) ? "Yes" : "No"}</Text>
+          <Text>Force download    {forceKeys.has(keyValue) ? "Yes" : "No"}</Text>
+          <Text>Conflict handling Keep local file; save remote version separately</Text>
         </Box>
-        <Footer>Space 选择/取消  f 切换强制下载  Esc 返回</Footer>
+        <Footer>Space Select/Deselect  f Toggle force download  Esc Back</Footer>
       </Box>
     );
   }
@@ -498,22 +498,22 @@ export function TuiApp({
     for (const item of selectedItems) destinations.set(item.outputDir, (destinations.get(item.outputDir) || 0) + 1);
     return (
       <Box flexDirection="column">
-        <Header>同步计划</Header>
+        <Header>Sync plan</Header>
         <Box flexDirection="column" marginTop={1} borderStyle="round" paddingX={1}>
-          <Text>已选择       {selectedItems.length} 个文件</Text>
-          <Text color="cyan">新文件       {byStatus.new}</Text>
-          <Text color="yellow">线上更新     {byStatus["remote-updated"]}</Text>
-          <Text color="green">已同步       {byStatus.synced}</Text>
-          <Text>强制下载     {selectedItems.filter((item) => item.force).length}</Text>
-          <Text>并行下载     {config.concurrency}</Text>
+          <Text>Selected       {selectedItems.length} files</Text>
+          <Text color="cyan">New            {byStatus.new}</Text>
+          <Text color="yellow">Remote updated {byStatus["remote-updated"]}</Text>
+          <Text color="green">Synced         {byStatus.synced}</Text>
+          <Text>Forced         {selectedItems.filter((item) => item.force).length}</Text>
+          <Text>Concurrency    {config.concurrency}</Text>
           <Box marginTop={1} flexDirection="column">
-            <Text bold>目标目录</Text>
+            <Text bold>Destinations</Text>
             {[...destinations].map(([destination, count]) => (
               <Text key={destination}>  {count} files → {shortPath(destination)}</Text>
             ))}
           </Box>
         </Box>
-        <Footer>Enter 开始同步  Esc 返回修改</Footer>
+        <Footer>Enter Start sync  Esc Edit selection</Footer>
       </Box>
     );
   }
@@ -521,19 +521,19 @@ export function TuiApp({
   if (screen === "progress" && progress) {
     return (
       <Box flexDirection="column">
-        <Header>正在同步</Header>
+        <Header>Syncing</Header>
         <Box flexDirection="column" marginTop={1}>
-          <Text bold>进度 {progress.completed}/{progress.total}</Text>
-          <Text>活动下载 {Object.keys(progress.active).length}/{config.concurrency}</Text>
+          <Text bold>Progress {progress.completed}/{progress.total}</Text>
+          <Text>Active downloads {Object.keys(progress.active).length}/{config.concurrency}</Text>
           {Object.entries(progress.active).map(([identity, value]) => (
             <Text key={identity} color="cyan">↓ {value}</Text>
           ))}
-          {progress.recent.length > 0 ? <Text bold>最近完成</Text> : null}
+          {progress.recent.length > 0 ? <Text bold>Recently completed</Text> : null}
           {progress.recent.map((value, index) => <Text key={`${index}:${value}`} color="green">✓ {value}</Text>)}
           {progress.failures.map((value, index) => <Text key={`${index}:${value}`} color="red">✗ {value}</Text>)}
-          {progress.cancelling ? <Text color="yellow">正在安全停止；活动下载完成后退出…</Text> : null}
+          {progress.cancelling ? <Text color="yellow">Stopping safely; waiting for active downloads…</Text> : null}
         </Box>
-        <Footer>q / Esc / Ctrl-C 安全停止</Footer>
+        <Footer>q / Esc / Ctrl-C Safe stop</Footer>
       </Box>
     );
   }
@@ -541,24 +541,24 @@ export function TuiApp({
   if (screen === "result" && result) {
     return (
       <Box flexDirection="column">
-        <Header>同步结果</Header>
+        <Header>Sync result</Header>
         <Box flexDirection="column" marginTop={1} borderStyle="round" paddingX={1}>
-          {result.error ? <Text color="red">错误：{result.error}</Text> : null}
-          {result.cancelled ? <Text color="yellow">同步已安全停止。</Text> : null}
+          {result.error ? <Text color="red">Error: {result.error}</Text> : null}
+          {result.cancelled ? <Text color="yellow">Sync stopped safely.</Text> : null}
           {result.counts ? (
             <>
-              <Text>新下载   {result.counts.downloaded}</Text>
-              <Text>已更新   {result.counts.updated}</Text>
-              <Text>已跳过   {result.counts.skipped}</Text>
-              <Text>冲突     {result.counts.conflicts}</Text>
-              <Text>失败     {result.counts.failed}</Text>
+              <Text>Downloaded {result.counts.downloaded}</Text>
+              <Text>Updated    {result.counts.updated}</Text>
+              <Text>Skipped    {result.counts.skipped}</Text>
+              <Text>Conflicts  {result.counts.conflicts}</Text>
+              <Text>Failed     {result.counts.failed}</Text>
             </>
           ) : null}
         </Box>
-        <Footer>Enter / Esc 返回课程列表  q 退出</Footer>
+        <Footer>Enter / Esc Return to course list  q Quit</Footer>
       </Box>
     );
   }
 
-  return <Text color="red">未知界面状态。</Text>;
+  return <Text color="red">Unknown screen state.</Text>;
 }

@@ -37,7 +37,7 @@ test("renders the first-level course screen with status counts", () => {
     }],
     initialProfile: { version: 1, courseDestinations: {} },
   }));
-  assert.match(output, /课程列表/);
+  assert.match(output, /Course list/);
   assert.match(output, /CSCI-1/);
-  assert.match(output, /新文件 1/);
+  assert.match(output, /New 1/);
 });
