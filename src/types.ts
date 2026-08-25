@@ -4,13 +4,27 @@ export const REQUIRED_SCOPES = [
   "content:file:read",
 ] as const;
 
-export interface AppConfig {
+interface CommonConfig {
   baseUrl: string;
-  clientId: string;
-  redirectUri: string;
   outputDir: string;
   concurrency: number;
 }
+
+export interface OAuthAppConfig extends CommonConfig {
+  auth: {
+    method: "oauth";
+    clientId: string;
+    redirectUri: string;
+  };
+}
+
+export interface BrowserSessionAppConfig extends CommonConfig {
+  auth: {
+    method: "browser-session";
+  };
+}
+
+export type AppConfig = OAuthAppConfig | BrowserSessionAppConfig;
 
 export interface OAuthTokenResponse {
   access_token: string;

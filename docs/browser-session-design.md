@@ -1,6 +1,6 @@
 # Browser-session authentication design
 
-Status: implementation proposal for `browser-session-poc`.
+Status: implemented on `browser-session-poc`; automated tests and local Chromium launch pass. The USC live proof remains to be completed by signing in with a real USC account.
 
 This branch explores a fallback for users who cannot obtain a USC-registered OAuth application. The user signs in to USC Brightspace manually in a dedicated browser window, completes Duo, and lets the CLI reuse only the resulting Brightspace session. The tool never collects or stores the USC username, password, Microsoft session, or Duo data.
 
@@ -16,7 +16,7 @@ This branch explores a fallback for users who cannot obtain a USC-registered OAu
 ## User experience
 
 ```text
-usc-bs auth login --method browser
+usc-bs auth login --method browser-session
 usc-bs auth status
 usc-bs doctor
 usc-bs

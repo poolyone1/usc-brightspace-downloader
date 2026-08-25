@@ -1,69 +1,85 @@
-# USC Brightspace Downloader — OAuth proof of concept
+# USC Brightspace Downloader — browser-session proof of concept
 
-这是一个只读的本地命令行原型。它使用 Brightspace 官方 OAuth 2.0 API：首次通过 USC NetID 和 Duo 登录，随后用轮换 refresh token 自动认证，并下载当前账号可访问课程中的 File Topic。
+只读、本地运行的 USC Brightspace 文件下载器。默认方案会打开一个隔离的 Chromium 窗口，由你亲自完成 USC NetID 和 Duo 登录；工具只保存 `brightspace.usc.edu` 的会话数据，不读取或保存用户名、密码、Microsoft/Duo 会话。
 
-## 当前范围
+## 已实现范围
 
-- Brightspace 内容 API 只发送 GET 请求。
 - 默认扫描所有 active、accessible 的 Course Offering。
-- 递归保留课程模块目录结构。
-- 只下载 `ActivityType=File`；跳过 LTI、Quiz、Discussion、外链和隐藏/锁定内容。
-- 用 Topic ID、`LastModifiedDate` 和本地 manifest 判断更新。
-- 下载到临时文件，计算 SHA-256 后原子替换。
-- 检测到本地文件被修改时不覆盖，另存远端版本。
-- OAuth client secret 和 refresh token 存入 macOS Keychain。
+- 递归保留课程模块目录结构，只下载可见的 `ActivityType=File`。
+- 内容接口只发送 GET；不会提交作业、修改课程或绕过权限。
+- 用 Topic ID、修改时间和本地 manifest 做增量更新。
+- 临时文件流式下载、SHA-256 校验、成功后原子移动。
+- 本地文件被修改时不覆盖，而是另存远端版本。
+- 浏览器会话只允许 `brightspace.usc.edu` cookie/local storage。
+- 会话以 AES-256-GCM 加密，随机密钥放在 macOS Keychain；磁盘不保存明文会话。
+- OAuth + refresh token 后端仍保留，但必须显式选择。
 
-TUI 和自定义课程/模块目录映射不在这个 oneshot 中；它们会在 API 链路实测通过后复用同一个同步引擎。
+TUI 和自定义课程/模块映射尚未实现；它们可以复用当前的认证与同步引擎。
 
-无法取得 USC OAuth 应用凭据时，可参考 [`docs/browser-session-design.md`](docs/browser-session-design.md) 中的手动登录一次并加密保存 Brightspace 会话方案。该方案当前位于 `browser-session-poc` 分支，尚未声称通过 USC 实测。
+## 安装
 
-## USC 需要注册的 OAuth 应用
-
-必须先从 USC Brightspace 管理员处取得 `client_id` 和 `client_secret`：
-
-```text
-Grant type: Authorization Grant
-Redirect URI: https://localhost:3001/oauth/callback
-Scopes:
-  enrollment:own_enrollment:read
-  content:toc:read
-  content:file:read
-Enable refresh tokens: Yes
-```
-
-回调地址必须和 USC 注册的值完全一致。原型会生成仅用于本机回调的自签名证书，因此首次回调时浏览器可能显示一次 localhost 证书警告。
-
-## 安装和运行
-
-要求 macOS 和 Node.js 24+。
+要求 macOS、Node.js 24+。
 
 ```bash
 npm install
+npx playwright install chromium
 npm run check
 npm link
-
-usc-bs configure
-usc-bs login
-usc-bs doctor
-usc-bs
 ```
 
-无参数运行会扫描全部当前可访问课程，显示课程与文件数量，并默认确认下载。
-
-其他命令：
+## 第一次使用浏览器会话
 
 ```bash
-usc-bs --dry-run
-usc-bs --course CSCI-570
-usc-bs --output "/path/to/courses"
-usc-bs status
-usc-bs logout
+usc-bs configure --method browser-session
+usc-bs auth login
 ```
 
-设置保存在：
+接受默认设置后，会出现一个全新的 Chromium 窗口：
+
+1. 在窗口中完成 USC NetID 登录。
+2. 完成 Duo。
+3. 等待进入 Brightspace；不要复制 cookie 或 token。
+4. CLI 会用只读 enrollment API 判断登录完成，随后自动关闭窗口并加密保存会话。
+
+然后验证和下载：
+
+```bash
+usc-bs auth status
+usc-bs doctor
+usc-bs --dry-run
+usc-bs -y
+```
+
+以后直接运行 `usc-bs` 即可。若 USC/D2L 使会话过期，交互式运行会重新打开登录窗口。
+
+## 常用选项
+
+```bash
+usc-bs --course CSCI-570
+usc-bs --output "/path/to/courses"
+usc-bs --force
+usc-bs auth logout
+```
+
+`auth logout` 删除加密会话文件及其 Keychain 密钥，但保留下载内容。
+
+## 本地文件
 
 ```text
 ~/Library/Application Support/usc-bs/config.json
+~/Library/Application Support/usc-bs/browser-session.enc
+<下载目录>/.usc-bs-manifest.json
 ```
 
-下载状态保存在下载根目录的 `.usc-bs-manifest.json`。其中不含 OAuth token。
+`browser-session.enc` 是密文；manifest 不含认证信息。详细安全设计和实测门槛见 [`docs/browser-session-design.md`](docs/browser-session-design.md)。
+
+## OAuth（可选）
+
+只有拿到 USC 注册的 Brightspace OAuth `client_id` / `client_secret` 后才选择：
+
+```bash
+usc-bs configure --method oauth
+usc-bs auth login
+```
+
+需要 scopes：`enrollment:own_enrollment:read`、`content:toc:read`、`content:file:read`，并启用 refresh token。

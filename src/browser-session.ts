@@ -1,0 +1,237 @@
+import type { APIResponse, Browser, BrowserContext } from "playwright";
+import { chromium } from "playwright";
+import {
+  BrightspaceApi,
+  BrightspaceAuthenticationError,
+  BrightspaceHttpError,
+} from "./brightspace.js";
+import type { DownloadedFile } from "./brightspace.js";
+import { streamToFile } from "./download.js";
+import type { BrowserSessionAppConfig, ProductVersions } from "./types.js";
+import { loadBrowserSession, saveBrowserSession } from "./browser-session-store.js";
+
+const LOGIN_TIMEOUT_MS = 10 * 60 * 1000;
+
+export class BrowserSessionExpiredError extends BrightspaceAuthenticationError {
+  constructor(message = "The saved Brightspace browser session has expired. Run `usc-bs auth login`.") {
+    super(message);
+  }
+}
+
+function sleep(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function contentType(response: APIResponse): string {
+  return response.headers()["content-type"] || "";
+}
+
+async function apiJson<T>(
+  context: BrowserContext,
+  baseUrl: string,
+  pathname: string,
+  authenticated: boolean,
+): Promise<T> {
+  const url = new URL(pathname, baseUrl);
+  if (url.origin !== new URL(baseUrl).origin) throw new Error("Invalid Brightspace API URL.");
+  const response = await context.request.get(url.toString(), {
+    failOnStatusCode: false,
+    maxRedirects: 0,
+    headers: { accept: "application/json" },
+  });
+  if ([301, 302, 303, 307, 308, 401].includes(response.status())) {
+    throw new BrowserSessionExpiredError();
+  }
+  if (!response.ok()) {
+    throw new BrightspaceHttpError(response.status(), `Brightspace request failed (${response.status()}).`);
+  }
+  if (!contentType(response).toLowerCase().includes("json")) {
+    if (authenticated) throw new BrowserSessionExpiredError("Brightspace returned a login page instead of JSON.");
+    throw new Error(`Expected Brightspace JSON, received ${contentType(response) || "unknown content"}.`);
+  }
+  return await response.json() as T;
+}
+
+async function browserSessionIsReady(context: BrowserContext, baseUrl: string): Promise<boolean> {
+  try {
+    const products = await apiJson<ProductVersions[]>(context, baseUrl, "/d2l/api/versions/", false);
+    const lp = products.find((product) => product.ProductCode.toLowerCase() === "lp")?.LatestVersion;
+    if (!lp) return false;
+    const path = `/d2l/api/lp/${encodeURIComponent(lp)}/enrollments/myenrollments/?isActive=true&canAccess=true`;
+    await apiJson<unknown>(context, baseUrl, path, true);
+    return true;
+  } catch (error) {
+    if (error instanceof BrowserSessionExpiredError || error instanceof BrightspaceHttpError) return false;
+    return false;
+  }
+}
+
+export async function loginBrowserSession(config: BrowserSessionAppConfig): Promise<void> {
+  const browser = await chromium.launch({ headless: false });
+  const context = await browser.newContext({ acceptDownloads: true });
+  const page = await context.newPage();
+  const deadline = Date.now() + LOGIN_TIMEOUT_MS;
+  let disconnected = false;
+  browser.on("disconnected", () => (disconnected = true));
+  console.log("A private Chromium window has opened. Complete USC NetID and Duo there.");
+  console.log("The CLI never reads or stores your password or Duo response.");
+
+  try {
+    await page.goto(new URL("/d2l/login", config.baseUrl).toString(), { waitUntil: "domcontentloaded" });
+    while (Date.now() < deadline) {
+      if (disconnected || context.pages().length === 0) {
+        throw new Error("Login window was closed before Brightspace authentication completed.");
+      }
+      if (await browserSessionIsReady(context, config.baseUrl)) {
+        const state = await context.storageState();
+        await saveBrowserSession(state, config.baseUrl);
+        console.log("Brightspace session verified and encrypted locally.");
+        return;
+      }
+      await sleep(2_000);
+    }
+    throw new Error("Browser login timed out after 10 minutes.");
+  } finally {
+    if (!disconnected) await browser.close();
+  }
+}
+
+type DownloadMode = "unknown" | "browser" | "cookie";
+
+export class BrowserSessionBrightspaceClient extends BrightspaceApi {
+  private downloadMode: DownloadMode = "unknown";
+
+  private constructor(
+    baseUrl: string,
+    private readonly browser: Browser,
+    private readonly context: BrowserContext,
+  ) {
+    super(baseUrl);
+  }
+
+  static async create(config: BrowserSessionAppConfig): Promise<BrowserSessionBrightspaceClient> {
+    const state = await loadBrowserSession(config.baseUrl);
+    const browser = await chromium.launch({ headless: true });
+    try {
+      const context = await browser.newContext({ storageState: state, acceptDownloads: true });
+      return new BrowserSessionBrightspaceClient(config.baseUrl, browser, context);
+    } catch (error) {
+      await browser.close();
+      throw error;
+    }
+  }
+
+  async close(): Promise<void> {
+    await this.browser.close();
+  }
+
+  async json<T>(pathname: string, authenticated = true): Promise<T> {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      try {
+        return await apiJson<T>(this.context, this.baseUrl.origin, pathname, authenticated);
+      } catch (error) {
+        if (error instanceof BrowserSessionExpiredError) throw error;
+        lastError = error;
+        const status = error instanceof BrightspaceHttpError ? error.status : 0;
+        if (attempt === 4 || (status !== 429 && status < 500)) throw error;
+        await sleep(Math.min(1000 * 2 ** attempt, 15_000));
+      }
+    }
+    throw lastError;
+  }
+
+  private fileUrl(leVersion: string, courseId: number, topicId: number): URL {
+    return this.apiUrl(
+      `/d2l/api/le/${encodeURIComponent(leVersion)}/${courseId}/content/topics/${topicId}/file`,
+    );
+  }
+
+  private async browserDownload(url: URL, target: string): Promise<DownloadedFile> {
+    const page = await this.context.newPage();
+    try {
+      const pending = page.waitForEvent("download", { timeout: 4_000 });
+      await page.goto(url.toString(), { waitUntil: "commit", timeout: 15_000 }).catch(() => undefined);
+      const download = await pending;
+      const failure = await download.failure();
+      if (failure) throw new Error(`Browser download failed: ${failure}`);
+      const source = await download.createReadStream();
+      const streamed = await streamToFile(source, target);
+      return {
+        ...streamed,
+        suggestedFilename: download.suggestedFilename(),
+        contentDisposition: null,
+        contentType: null,
+        etag: null,
+      };
+    } finally {
+      await page.close().catch(() => undefined);
+    }
+  }
+
+  private async cookieDownload(url: URL, target: string): Promise<DownloadedFile> {
+    let current = new URL(url);
+    let includeCookies = true;
+    for (let redirectCount = 0; redirectCount < 6; redirectCount += 1) {
+      const cookies = includeCookies ? await this.context.cookies(current.toString()) : [];
+      const headers = new Headers({ accept: "*/*", "user-agent": "usc-bs/0.1" });
+      if (cookies.length > 0) {
+        headers.set("cookie", cookies.map((cookie) => `${cookie.name}=${cookie.value}`).join("; "));
+      }
+      let response: Response | null = null;
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        response = await fetch(current, { method: "GET", headers, redirect: "manual" });
+        if (response.status !== 429 && response.status < 500) break;
+        if (attempt === 4) break;
+        await sleep(Math.min(1000 * 2 ** attempt, 15_000));
+      }
+      if (!response) throw new Error("Brightspace file request did not return a response.");
+      if ([301, 302, 303, 307, 308].includes(response.status)) {
+        const location = response.headers.get("location");
+        if (!location) throw new Error("Brightspace redirect did not include a location.");
+        const next = new URL(location, current);
+        if (next.protocol !== "https:") throw new Error("Refusing a non-HTTPS file redirect.");
+        includeCookies = next.origin === this.baseUrl.origin;
+        current = next;
+        continue;
+      }
+      if ([401, 403].includes(response.status)) throw new BrowserSessionExpiredError();
+      if (!response.ok) throw new BrightspaceHttpError(response.status, `File download failed (${response.status}).`);
+      if (!response.body) throw new Error("File response did not contain a body.");
+      const length = Number.parseInt(response.headers.get("content-length") || "", 10);
+      const streamed = await streamToFile(
+        response.body as unknown as AsyncIterable<Uint8Array>,
+        target,
+        Number.isFinite(length) ? length : undefined,
+      );
+      return {
+        ...streamed,
+        suggestedFilename: null,
+        contentDisposition: response.headers.get("content-disposition"),
+        contentType: response.headers.get("content-type"),
+        etag: response.headers.get("etag"),
+      };
+    }
+    throw new Error("Too many redirects from the Brightspace file endpoint.");
+  }
+
+  async downloadFile(
+    leVersion: string,
+    courseId: number,
+    topicId: number,
+    targetPartPath: string,
+  ): Promise<DownloadedFile> {
+    const url = this.fileUrl(leVersion, courseId, topicId);
+    if (this.downloadMode !== "cookie") {
+      try {
+        const result = await this.browserDownload(url, targetPartPath);
+        this.downloadMode = "browser";
+        return result;
+      } catch (error) {
+        if (this.downloadMode === "browser") throw error;
+        this.downloadMode = "cookie";
+      }
+    }
+    return this.cookieDownload(url, targetPartPath);
+  }
+}

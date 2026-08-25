@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 const SECURITY = "/usr/bin/security";
 const CLIENT_SECRET_SERVICE = "usc-bs.client-secret";
 const REFRESH_TOKEN_SERVICE = "usc-bs.refresh-token";
+const BROWSER_SESSION_KEY_SERVICE = "usc-bs.browser-session-key";
 
 interface CommandResult {
   code: number;
@@ -76,4 +77,10 @@ export const keychain = {
     setPassword(REFRESH_TOKEN_SERVICE, refreshTokenAccount(baseUrl, clientId), value),
   deleteRefreshToken: (baseUrl: string, clientId: string) =>
     deletePassword(REFRESH_TOKEN_SERVICE, refreshTokenAccount(baseUrl, clientId)),
+  getBrowserSessionKey: (baseUrl: string) =>
+    getPassword(BROWSER_SESSION_KEY_SERVICE, new URL(baseUrl).origin),
+  setBrowserSessionKey: (baseUrl: string, value: string) =>
+    setPassword(BROWSER_SESSION_KEY_SERVICE, new URL(baseUrl).origin, value),
+  deleteBrowserSessionKey: (baseUrl: string) =>
+    deletePassword(BROWSER_SESSION_KEY_SERVICE, new URL(baseUrl).origin),
 };

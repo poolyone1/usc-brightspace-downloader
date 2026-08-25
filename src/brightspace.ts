@@ -5,10 +5,20 @@ import type {
   ProductVersions,
   TableOfContents,
 } from "./types.js";
+import { streamToFile } from "./download.js";
 
 export interface ApiVersions {
   lp: string;
   le: string;
+}
+
+export interface DownloadedFile {
+  sha256: string;
+  size: number;
+  suggestedFilename: string | null;
+  contentDisposition: string | null;
+  contentType: string | null;
+  etag: string | null;
 }
 
 export class BrightspaceHttpError extends Error {
@@ -19,6 +29,8 @@ export class BrightspaceHttpError extends Error {
     super(message);
   }
 }
+
+export class BrightspaceAuthenticationError extends Error {}
 
 function retryDelay(response: Response, attempt: number): number {
   const retryAfter = Number.parseFloat(response.headers.get("retry-after") || "");
@@ -45,15 +57,81 @@ async function responseError(response: Response): Promise<BrightspaceHttpError> 
   );
 }
 
-export class BrightspaceClient {
+export abstract class BrightspaceApi {
   readonly baseUrl: URL;
 
+  constructor(baseUrl: string) {
+    this.baseUrl = new URL(baseUrl);
+    if (this.baseUrl.protocol !== "https:") throw new Error("Brightspace URL must use HTTPS.");
+  }
+
+  protected apiUrl(pathname: string): URL {
+    const url = new URL(pathname, this.baseUrl);
+    if (url.origin !== this.baseUrl.origin) throw new Error("Invalid Brightspace API URL.");
+    return url;
+  }
+
+  abstract json<T>(pathname: string, authenticated?: boolean): Promise<T>;
+
+  abstract downloadFile(
+    leVersion: string,
+    courseId: number,
+    topicId: number,
+    targetPartPath: string,
+  ): Promise<DownloadedFile>;
+
+  async close(): Promise<void> {}
+
+  async versions(): Promise<ApiVersions> {
+    const products = await this.json<ProductVersions[]>("/d2l/api/versions/", false);
+    const lookup = new Map(products.map((product) => [product.ProductCode.toLowerCase(), product]));
+    const lp = lookup.get("lp")?.LatestVersion;
+    const le = lookup.get("le")?.LatestVersion;
+    if (!lp || !le) throw new Error("Brightspace did not advertise LP and LE API versions.");
+    return { lp, le };
+  }
+
+  async courses(lpVersion: string): Promise<Course[]> {
+    const courses: Course[] = [];
+    let bookmark: string | null = null;
+
+    do {
+      const url = this.apiUrl(`/d2l/api/lp/${encodeURIComponent(lpVersion)}/enrollments/myenrollments/`);
+      url.searchParams.set("isActive", "true");
+      url.searchParams.set("canAccess", "true");
+      url.searchParams.append("sortBy", "OrgUnitName");
+      if (bookmark) url.searchParams.set("bookmark", bookmark);
+
+      const page = await this.json<PagedResultSet<MyOrgUnitInfo>>(`${url.pathname}${url.search}`);
+      for (const item of page.Items) {
+        const type = `${item.OrgUnit.Type.Code} ${item.OrgUnit.Type.Name}`.toLowerCase();
+        if (!type.includes("course") || !type.includes("offering")) continue;
+        if (!item.Access.IsActive || !item.Access.CanAccess) continue;
+        courses.push({
+          id: item.OrgUnit.Id,
+          code: item.OrgUnit.Code || String(item.OrgUnit.Id),
+          name: item.OrgUnit.Name,
+        });
+      }
+      bookmark = page.PagingInfo.HasMoreItems ? page.PagingInfo.Bookmark : null;
+    } while (bookmark);
+
+    return courses;
+  }
+
+  async toc(leVersion: string, courseId: number): Promise<TableOfContents> {
+    return this.json<TableOfContents>(
+      `/d2l/api/le/${encodeURIComponent(leVersion)}/${courseId}/content/toc`,
+    );
+  }
+}
+
+export class BrightspaceClient extends BrightspaceApi {
   constructor(
     baseUrl: string,
     private readonly tokenProvider: () => Promise<string>,
   ) {
-    this.baseUrl = new URL(baseUrl);
-    if (this.baseUrl.protocol !== "https:") throw new Error("Brightspace URL must use HTTPS.");
+    super(baseUrl);
   }
 
   private async request(
@@ -99,12 +177,6 @@ export class BrightspaceClient {
     throw new Error("Too many redirects from Brightspace.");
   }
 
-  private apiUrl(pathname: string): URL {
-    const url = new URL(pathname, this.baseUrl);
-    if (url.origin !== this.baseUrl.origin) throw new Error("Invalid Brightspace API URL.");
-    return url;
-  }
-
   async json<T>(pathname: string, authenticated = true): Promise<T> {
     const response = await this.request(this.apiUrl(pathname), { authenticated });
     const contentType = response.headers.get("content-type") || "";
@@ -114,49 +186,6 @@ export class BrightspaceClient {
     return (await response.json()) as T;
   }
 
-  async versions(): Promise<ApiVersions> {
-    const products = await this.json<ProductVersions[]>("/d2l/api/versions/", false);
-    const lookup = new Map(products.map((product) => [product.ProductCode.toLowerCase(), product]));
-    const lp = lookup.get("lp")?.LatestVersion;
-    const le = lookup.get("le")?.LatestVersion;
-    if (!lp || !le) throw new Error("Brightspace did not advertise LP and LE API versions.");
-    return { lp, le };
-  }
-
-  async courses(lpVersion: string): Promise<Course[]> {
-    const courses: Course[] = [];
-    let bookmark: string | null = null;
-
-    do {
-      const url = this.apiUrl(`/d2l/api/lp/${encodeURIComponent(lpVersion)}/enrollments/myenrollments/`);
-      url.searchParams.set("isActive", "true");
-      url.searchParams.set("canAccess", "true");
-      url.searchParams.append("sortBy", "OrgUnitName");
-      if (bookmark) url.searchParams.set("bookmark", bookmark);
-
-      const page = await this.json<PagedResultSet<MyOrgUnitInfo>>(`${url.pathname}${url.search}`);
-      for (const item of page.Items) {
-        const type = `${item.OrgUnit.Type.Code} ${item.OrgUnit.Type.Name}`.toLowerCase();
-        if (!type.includes("course") || !type.includes("offering")) continue;
-        if (!item.Access.IsActive || !item.Access.CanAccess) continue;
-        courses.push({
-          id: item.OrgUnit.Id,
-          code: item.OrgUnit.Code || String(item.OrgUnit.Id),
-          name: item.OrgUnit.Name,
-        });
-      }
-      bookmark = page.PagingInfo.HasMoreItems ? page.PagingInfo.Bookmark : null;
-    } while (bookmark);
-
-    return courses;
-  }
-
-  async toc(leVersion: string, courseId: number): Promise<TableOfContents> {
-    return this.json<TableOfContents>(
-      `/d2l/api/le/${encodeURIComponent(leVersion)}/${courseId}/content/toc`,
-    );
-  }
-
   async file(leVersion: string, courseId: number, topicId: number): Promise<Response> {
     return this.request(
       this.apiUrl(
@@ -164,5 +193,28 @@ export class BrightspaceClient {
       ),
       { allowExternalRedirect: true },
     );
+  }
+
+  async downloadFile(
+    leVersion: string,
+    courseId: number,
+    topicId: number,
+    targetPartPath: string,
+  ): Promise<DownloadedFile> {
+    const response = await this.file(leVersion, courseId, topicId);
+    if (!response.body) throw new Error("File response did not contain a body.");
+    const length = Number.parseInt(response.headers.get("content-length") || "", 10);
+    const streamed = await streamToFile(
+      response.body as unknown as AsyncIterable<Uint8Array>,
+      targetPartPath,
+      Number.isFinite(length) ? length : undefined,
+    );
+    return {
+      ...streamed,
+      suggestedFilename: null,
+      contentDisposition: response.headers.get("content-disposition"),
+      contentType: response.headers.get("content-type"),
+      etag: response.headers.get("etag"),
+    };
   }
 }

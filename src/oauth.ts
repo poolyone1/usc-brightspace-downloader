@@ -3,7 +3,7 @@ import { access, chmod, mkdir, readFile } from "node:fs/promises";
 import { createServer } from "node:https";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import type { AppConfig, OAuthTokenResponse } from "./types.js";
+import type { OAuthAppConfig, OAuthTokenResponse } from "./types.js";
 import { REQUIRED_SCOPES } from "./types.js";
 import { getStateDir, requireClientSecret } from "./config.js";
 import { keychain } from "./keychain.js";
@@ -74,8 +74,8 @@ function openBrowser(url: string): void {
   child.unref();
 }
 
-async function receiveAuthorizationCode(config: AppConfig, state: string): Promise<string> {
-  const redirect = new URL(config.redirectUri);
+async function receiveAuthorizationCode(config: OAuthAppConfig, state: string): Promise<string> {
+  const redirect = new URL(config.auth.redirectUri);
   const certificate = await localCertificate();
 
   return await new Promise<string>((resolve, reject) => {
@@ -91,7 +91,7 @@ async function receiveAuthorizationCode(config: AppConfig, state: string): Promi
     };
 
     const server = createServer(certificate, (request, response) => {
-      const requestUrl = new URL(request.url || "/", config.redirectUri);
+      const requestUrl = new URL(request.url || "/", config.auth.redirectUri);
       if (requestUrl.pathname !== redirect.pathname) {
         response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
         response.end("Not found");
@@ -140,8 +140,8 @@ async function receiveAuthorizationCode(config: AppConfig, state: string): Promi
     server.listen(Number(redirect.port), redirect.hostname, () => {
       const authorizeUrl = new URL(AUTHORIZE_ENDPOINT);
       authorizeUrl.searchParams.set("response_type", "code");
-      authorizeUrl.searchParams.set("redirect_uri", config.redirectUri);
-      authorizeUrl.searchParams.set("client_id", config.clientId);
+      authorizeUrl.searchParams.set("redirect_uri", config.auth.redirectUri);
+      authorizeUrl.searchParams.set("client_id", config.auth.clientId);
       authorizeUrl.searchParams.set("scope", REQUIRED_SCOPES.join(" "));
       authorizeUrl.searchParams.set("state", state);
       console.log("Opening the USC login page in your browser…");
@@ -172,11 +172,11 @@ function validateTokenResponse(value: unknown): OAuthTokenResponse {
 }
 
 async function requestToken(
-  config: AppConfig,
+  config: OAuthAppConfig,
   form: URLSearchParams,
 ): Promise<OAuthTokenResponse> {
   const clientSecret = await requireClientSecret(config);
-  const basic = Buffer.from(`${config.clientId}:${clientSecret}`, "utf8").toString("base64");
+  const basic = Buffer.from(`${config.auth.clientId}:${clientSecret}`, "utf8").toString("base64");
   const response = await fetch(TOKEN_ENDPOINT, {
     method: "POST",
     headers: {
@@ -205,7 +205,7 @@ async function requestToken(
 }
 
 async function saveRotatedRefreshToken(
-  config: AppConfig,
+  config: OAuthAppConfig,
   token: OAuthTokenResponse,
 ): Promise<void> {
   if (!token.refresh_token) {
@@ -213,17 +213,17 @@ async function saveRotatedRefreshToken(
       "Brightspace did not return a refresh token. Confirm that the OAuth app has refresh tokens enabled.",
     );
   }
-  await keychain.setRefreshToken(config.baseUrl, config.clientId, token.refresh_token);
+  await keychain.setRefreshToken(config.baseUrl, config.auth.clientId, token.refresh_token);
 }
 
-export async function login(config: AppConfig): Promise<OAuthTokenResponse> {
+export async function login(config: OAuthAppConfig): Promise<OAuthTokenResponse> {
   const state = randomBytes(32).toString("base64url");
   const code = await receiveAuthorizationCode(config, state);
   const token = await requestToken(
     config,
     new URLSearchParams({
       grant_type: "authorization_code",
-      redirect_uri: config.redirectUri,
+      redirect_uri: config.auth.redirectUri,
       code,
     }),
   );
@@ -231,8 +231,8 @@ export async function login(config: AppConfig): Promise<OAuthTokenResponse> {
   return token;
 }
 
-export async function refresh(config: AppConfig): Promise<OAuthTokenResponse> {
-  const refreshToken = await keychain.getRefreshToken(config.baseUrl, config.clientId);
+export async function refresh(config: OAuthAppConfig): Promise<OAuthTokenResponse> {
+  const refreshToken = await keychain.getRefreshToken(config.baseUrl, config.auth.clientId);
   if (!refreshToken) throw new OAuthError("No refresh token is stored.", "missing_refresh_token");
   const token = await requestToken(
     config,
@@ -242,7 +242,7 @@ export async function refresh(config: AppConfig): Promise<OAuthTokenResponse> {
   return token;
 }
 
-export async function getAccessToken(config: AppConfig): Promise<OAuthTokenResponse> {
+export async function getAccessToken(config: OAuthAppConfig): Promise<OAuthTokenResponse> {
   try {
     return await refresh(config);
   } catch (error) {
@@ -259,7 +259,7 @@ export async function getAccessToken(config: AppConfig): Promise<OAuthTokenRespo
 }
 
 export async function createAccessTokenProvider(
-  config: AppConfig,
+  config: OAuthAppConfig,
 ): Promise<() => Promise<string>> {
   let token = await getAccessToken(config);
   let expiresAt = Date.now() + token.expires_in * 1000;
@@ -280,10 +280,10 @@ export async function createAccessTokenProvider(
   };
 }
 
-export async function authStatus(config: AppConfig): Promise<boolean> {
-  return Boolean(await keychain.getRefreshToken(config.baseUrl, config.clientId));
+export async function authStatus(config: OAuthAppConfig): Promise<boolean> {
+  return Boolean(await keychain.getRefreshToken(config.baseUrl, config.auth.clientId));
 }
 
-export async function logout(config: AppConfig): Promise<void> {
-  await keychain.deleteRefreshToken(config.baseUrl, config.clientId);
+export async function logout(config: OAuthAppConfig): Promise<void> {
+  await keychain.deleteRefreshToken(config.baseUrl, config.auth.clientId);
 }

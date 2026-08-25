@@ -1,11 +1,9 @@
-import { createHash } from "node:crypto";
-import { createReadStream, createWriteStream } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { createReadStream } from "node:fs";
 import { access, mkdir, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
-import { Readable, Transform } from "node:stream";
-import { pipeline } from "node:stream/promises";
-import type { BrightspaceClient } from "./brightspace.js";
-import { BrightspaceHttpError } from "./brightspace.js";
+import type { BrightspaceApi } from "./brightspace.js";
+import { BrightspaceAuthenticationError, BrightspaceHttpError } from "./brightspace.js";
 import { confirm } from "./prompt.js";
 import {
   conflictRelativePath,
@@ -97,7 +95,7 @@ async function mapConcurrent<T, R>(
 }
 
 export async function scan(
-  client: BrightspaceClient,
+  client: BrightspaceApi,
   versions: { lp: string; le: string },
   options: SyncOptions,
   concurrency: number,
@@ -151,35 +149,12 @@ function entryIsCurrent(
   );
 }
 
-async function streamResponse(response: Response, target: string): Promise<{ sha256: string; size: number }> {
-  if (!response.body) throw new Error("File response did not contain a body.");
-  const hash = createHash("sha256");
-  let size = 0;
-  const meter = new Transform({
-    transform(chunk: Buffer, _encoding, callback) {
-      hash.update(chunk);
-      size += chunk.length;
-      callback(null, chunk);
-    },
-  });
-  await pipeline(
-    Readable.from(response.body as unknown as AsyncIterable<Uint8Array>),
-    meter,
-    createWriteStream(target, { mode: 0o600 }),
-  );
-  const expectedLength = Number.parseInt(response.headers.get("content-length") || "", 10);
-  if (Number.isFinite(expectedLength) && expectedLength !== size) {
-    throw new Error(`Incomplete download: expected ${expectedLength} bytes, received ${size}.`);
-  }
-  return { sha256: hash.digest("hex"), size };
-}
-
 function displayCourse(course: Course): string {
   return course.code === String(course.id) ? course.name : `${course.code} — ${course.name}`;
 }
 
 export async function syncAll(
-  client: BrightspaceClient,
+  client: BrightspaceApi,
   config: AppConfig,
   versions: { lp: string; le: string },
   options: SyncOptions,
@@ -215,6 +190,7 @@ export async function syncAll(
   const counts: SyncCounts = { downloaded: 0, updated: 0, skipped: 0, conflicts: 0, failed: 0 };
   let nextIndex = 0;
   let stopping = false;
+  let fatalAuthenticationError: BrightspaceAuthenticationError | null = null;
   let saveQueue = Promise.resolve();
 
   const persist = async () => {
@@ -246,27 +222,34 @@ export async function syncAll(
       }
     }
 
-    const response = await client.file(versions.le, topic.course.id, topic.topicId);
-    const remoteName = preferredFilename(
-      response.headers.get("content-disposition"),
-      topic.url,
-      topic.title,
-      response.headers.get("content-type"),
+    const temporary = path.join(
+      config.outputDir,
+      `.usc-bs-download-${process.pid}-${topic.topicId}-${randomUUID()}.part`,
     );
-    let relativePath =
-      previous?.localPath ||
-      uniqueRelativePath(topic.course, topic.modulePath, remoteName, topic.topicId, reserved);
-    if (localWasModified) {
-      relativePath = conflictRelativePath(relativePath, reserved);
-      counts.conflicts += 1;
-      console.warn(`Conflict: kept local copy and saved remote update separately for ${topic.title}`);
-    }
-
-    const target = safeResolve(config.outputDir, relativePath);
-    await mkdir(path.dirname(target), { recursive: true });
-    const temporary = `${target}.part-${process.pid}`;
     try {
-      const downloaded = await streamResponse(response, temporary);
+      const response = await client.downloadFile(
+        versions.le,
+        topic.course.id,
+        topic.topicId,
+        temporary,
+      );
+      const remoteName = preferredFilename(
+        response.contentDisposition,
+        response.suggestedFilename || topic.url,
+        topic.title,
+        response.contentType,
+      );
+      let relativePath =
+        previous?.localPath ||
+        uniqueRelativePath(topic.course, topic.modulePath, remoteName, topic.topicId, reserved);
+      if (localWasModified) {
+        relativePath = conflictRelativePath(relativePath, reserved);
+        counts.conflicts += 1;
+        console.warn(`Conflict: kept local copy and saved remote update separately for ${topic.title}`);
+      }
+
+      const target = safeResolve(config.outputDir, relativePath);
+      await mkdir(path.dirname(target), { recursive: true });
       await rename(temporary, target);
       manifest.files[key] = {
         courseId: topic.course.id,
@@ -274,9 +257,9 @@ export async function syncAll(
         title: topic.title,
         remoteModified: topic.remoteModified,
         localPath: relativePath,
-        sha256: downloaded.sha256,
-        size: downloaded.size,
-        etag: response.headers.get("etag"),
+        sha256: response.sha256,
+        size: response.size,
+        etag: response.etag,
         downloadedAt: new Date().toISOString(),
       };
       if (previous) counts.updated += 1;
@@ -298,7 +281,12 @@ export async function syncAll(
       try {
         await downloadOne(topic);
       } catch (error) {
-        counts.failed += 1;
+        if (error instanceof BrightspaceAuthenticationError) {
+          fatalAuthenticationError = error;
+          stopping = true;
+        } else {
+          counts.failed += 1;
+        }
         console.error(`Failed: ${topic.course.code} / ${topic.title}: ${(error as Error).message}`);
       }
     }
@@ -310,6 +298,8 @@ export async function syncAll(
   } finally {
     process.off("SIGINT", onInterrupt);
   }
+
+  if (fatalAuthenticationError) throw fatalAuthenticationError;
 
   console.log(
     `\nDone: ${counts.downloaded} new, ${counts.updated} updated, ${counts.skipped} unchanged, ` +
