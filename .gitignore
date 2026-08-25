@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.test-dist/
+*.part-*
+.DS_Store
+.env
+.env.*
+*.key
+*.pem
+.usc-bs-manifest.json
