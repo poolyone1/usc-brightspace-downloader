@@ -1,6 +1,6 @@
 # USC Brightspace Downloader — browser session + TUI proof of concept
 
-只读、本地运行的 USC Brightspace 文件下载器。默认方案会打开一个隔离的 Chromium 窗口，由你亲自完成 USC NetID 和 Duo 登录；工具只保存 `brightspace.usc.edu` 的会话数据，不读取或保存用户名、密码、Microsoft/Duo 会话。
+只读、本地运行的 USC Brightspace 文件下载器。默认方案会打开一个隔离的 Chromium 窗口，由你亲自完成 USC NetID 和 Duo 登录；工具只保存 `brightspace.usc.edu` 的会话数据，不读取用户名、密码或 Duo 内容。也可以显式开启专用 Chrome 配置，让 Chrome 自己保存并自动填充密码。
 
 ## 已实现范围
 
@@ -54,6 +54,26 @@ usc-bs -y
 
 以后直接运行 `usc-bs` 即可。若 USC/D2L 使会话过期，交互式运行会重新打开登录窗口。
 
+### 可选：让 Chrome 保存并自动填充密码
+
+```bash
+usc-bs auth login --remember-password
+```
+
+这个命令会使用一个仅供本工具登录的 Google Chrome 配置。第一次登录时：
+
+1. 正常输入 USC NetID 和密码；Chrome 弹出询问时选择“保存”。
+2. 完成 Duo，并在 CLI 提示登录成功后保持窗口打开 15 秒。
+3. 以后会话过期时，这个专用窗口可以自动填充密码；Duo 仍需手动确认。
+
+工具不会读取 Chrome 密码库。登录状态保存到加密会话后，会清除此专用配置里的网站 cookie 和站点存储，但保留 Chrome 密码管理器中的登录信息。不要在这个专用 Chrome 配置中登录 Google 账号。
+
+要删除该配置及其中的已保存密码：
+
+```bash
+usc-bs auth forget-password
+```
+
 ## 多级 TUI
 
 ```bash
@@ -91,15 +111,17 @@ usc-bs --course CSCI-570
 usc-bs --output "/path/to/courses"
 usc-bs --force
 usc-bs auth logout
+usc-bs auth forget-password
 ```
 
-`auth logout` 删除加密会话文件及其 Keychain 密钥，但保留下载内容。
+`auth logout` 删除加密会话文件及其 Keychain 密钥，但保留下载内容和可选的 Chrome 密码配置。`auth forget-password` 只删除专用 Chrome 配置，不删除加密会话或已下载文件。
 
 ## 本地文件
 
 ```text
 ~/Library/Application Support/usc-bs/config.json
 ~/Library/Application Support/usc-bs/browser-session.enc
+~/Library/Application Support/usc-bs/chrome-login-profile/  # 仅在开启密码自动填充后存在
 ~/Library/Application Support/usc-bs/tui-profile.json
 <下载目录>/.usc-bs-manifest.json
 ```

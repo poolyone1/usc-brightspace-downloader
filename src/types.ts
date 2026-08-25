@@ -21,6 +21,7 @@ export interface OAuthAppConfig extends CommonConfig {
 export interface BrowserSessionAppConfig extends CommonConfig {
   auth: {
     method: "browser-session";
+    loginProfile?: "persistent-chrome";
   };
 }
 

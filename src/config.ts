@@ -55,7 +55,19 @@ export function validateConfig(value: unknown): AppConfig {
   // Migrate the original OAuth-only config format in memory.
   const auth = raw.auth as Record<string, unknown> | undefined;
   const method = auth?.method || (typeof raw.clientId === "string" ? "oauth" : "browser-session");
-  if (method === "browser-session") return { ...common, auth: { method } };
+  if (method === "browser-session") {
+    const loginProfile = auth?.loginProfile;
+    if (loginProfile !== undefined && loginProfile !== "persistent-chrome") {
+      throw new Error(`Unknown browser login profile: ${String(loginProfile)}.`);
+    }
+    return {
+      ...common,
+      auth: {
+        method,
+        ...(loginProfile === "persistent-chrome" ? { loginProfile } : {}),
+      },
+    };
+  }
   if (method !== "oauth") throw new Error(`Unknown authentication method: ${String(method)}.`);
   const clientId = String(auth?.clientId || raw.clientId || "");
   if (!clientId) throw new Error("OAuth config is missing clientId.");
@@ -116,7 +128,16 @@ export async function configure(preferredMethod?: AuthMethod): Promise<AppConfig
   const concurrency = Math.max(1, Math.min(8, Number.parseInt(concurrencyText, 10) || 3));
 
   if (methodText === "browser-session") {
-    const config: AppConfig = { baseUrl, outputDir, concurrency, auth: { method: methodText } };
+    const previousBrowser = existing?.auth.method === "browser-session" ? existing.auth : null;
+    const config: AppConfig = {
+      baseUrl,
+      outputDir,
+      concurrency,
+      auth: {
+        method: methodText,
+        ...(previousBrowser?.loginProfile ? { loginProfile: previousBrowser.loginProfile } : {}),
+      },
+    };
     await saveConfig(config);
     return config;
   }

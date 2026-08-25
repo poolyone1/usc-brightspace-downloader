@@ -1,6 +1,6 @@
 # Browser-session authentication design
 
-Status: implemented on `browser-session-poc`; automated tests and local Chromium launch pass. The USC live proof remains to be completed by signing in with a real USC account.
+Status: implemented on `master`; automated tests and local browser launch pass. The USC live proof remains to be completed by signing in with a real USC account.
 
 This branch explores a fallback for users who cannot obtain a USC-registered OAuth application. The user signs in to USC Brightspace manually in a dedicated browser window, completes Duo, and lets the CLI reuse only the resulting Brightspace session. The tool never collects or stores the USC username, password, Microsoft session, or Duo data.
 
@@ -10,17 +10,19 @@ This branch explores a fallback for users who cannot obtain a USC-registered OAu
 - Read-only Brightspace content access. Authentication pages naturally perform their own login requests, but the downloader exposes only GET operations for course data.
 - Download only visible `ActivityType=File` topics through the existing sync engine.
 - Do not bypass hidden content, date restrictions, release conditions, or access controls.
-- "Log in once" means once per server-side Brightspace session lifetime. USC or D2L can expire or revoke the session at any time.
-- Do not attach to the user's normal Chrome profile. Use an isolated Playwright context so unrelated browser cookies and history never enter the tool.
+- "Log in once" means once per server-side Brightspace session lifetime. USC or D2L can expire or revoke the session at any time. Optional password autofill reduces later logins but does not bypass Duo.
+- Do not attach to the user's normal Chrome profile. Use either an isolated Playwright context or the tool's dedicated Chrome login profile so unrelated browser cookies and history never enter the tool.
 
 ## User experience
 
 ```text
 usc-bs auth login --method browser-session
+usc-bs auth login --remember-password
 usc-bs auth status
 usc-bs doctor
 usc-bs
 usc-bs auth logout
+usc-bs auth forget-password
 ```
 
 Default flow when no valid authentication exists:
@@ -33,6 +35,12 @@ Default flow when no valid authentication exists:
 6. On later runs, load the encrypted state into a headless context. Reopen the login window only after the server rejects that state.
 
 No password prompt is added to the CLI.
+
+### Optional Chrome password autofill
+
+`auth login --remember-password` launches installed Google Chrome with a persistent profile dedicated to this tool. Playwright's automation flag and mock/basic password-store flags are omitted for this profile so Chrome can offer its normal password-save and autofill UI. The CLI never queries password fields or the Chrome password database.
+
+After the Brightspace session is captured and encrypted, the CLI allows 15 seconds for the user to accept Chrome's save prompt, then clears cookies and origin site storage before closing the window. The Chrome password store remains. `auth logout` keeps this profile; `auth forget-password` recursively deletes it and disables the feature. Users must not sign the dedicated profile into a Google account.
 
 ## Session capture
 

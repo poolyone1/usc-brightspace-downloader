@@ -20,3 +20,24 @@ test("defaults a config without OAuth credentials to browser-session", () => {
   const config = validateConfig({ outputDir: "/tmp/courses" });
   assert.deepEqual(config.auth, { method: "browser-session" });
 });
+
+test("accepts the dedicated persistent Chrome login profile", () => {
+  const config = validateConfig({
+    outputDir: "/tmp/courses",
+    auth: { method: "browser-session", loginProfile: "persistent-chrome" },
+  });
+  assert.deepEqual(config.auth, {
+    method: "browser-session",
+    loginProfile: "persistent-chrome",
+  });
+});
+
+test("rejects an unknown browser login profile", () => {
+  assert.throws(
+    () => validateConfig({
+      outputDir: "/tmp/courses",
+      auth: { method: "browser-session", loginProfile: "normal-chrome" },
+    }),
+    /Unknown browser login profile/,
+  );
+});

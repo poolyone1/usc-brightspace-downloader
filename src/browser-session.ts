@@ -1,3 +1,5 @@
+import { access, chmod, mkdir, rm } from "node:fs/promises";
+import path from "node:path";
 import type { APIResponse, Browser, BrowserContext } from "playwright";
 import { chromium } from "playwright";
 import {
@@ -9,8 +11,27 @@ import type { DownloadedFile } from "./brightspace.js";
 import { streamToFile } from "./download.js";
 import type { BrowserSessionAppConfig, ProductVersions } from "./types.js";
 import { loadBrowserSession, saveBrowserSession } from "./browser-session-store.js";
+import { getStateDir } from "./config.js";
 
 const LOGIN_TIMEOUT_MS = 10 * 60 * 1000;
+const PASSWORD_SAVE_GRACE_MS = 15_000;
+
+export function getChromeLoginProfileDir(): string {
+  return path.join(getStateDir(), "chrome-login-profile");
+}
+
+export async function hasChromeLoginProfile(): Promise<boolean> {
+  try {
+    await access(getChromeLoginProfileDir());
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function deleteChromeLoginProfile(): Promise<void> {
+  await rm(getChromeLoginProfileDir(), { recursive: true, force: true });
+}
 
 export class BrowserSessionExpiredError extends BrightspaceAuthenticationError {
   constructor(message = "The saved Brightspace browser session has expired. Run `usc-bs auth login`.") {
@@ -66,14 +87,105 @@ async function browserSessionIsReady(context: BrowserContext, baseUrl: string): 
   }
 }
 
-export async function loginBrowserSession(config: BrowserSessionAppConfig): Promise<void> {
+interface LoginEnvironment {
+  context: BrowserContext;
+  browser: Browser | null;
+  persistent: boolean;
+  close: () => Promise<void>;
+}
+
+async function launchLoginEnvironment(config: BrowserSessionAppConfig): Promise<LoginEnvironment> {
+  if (config.auth.loginProfile === "persistent-chrome") {
+    const profileDir = getChromeLoginProfileDir();
+    await mkdir(profileDir, { recursive: true, mode: 0o700 });
+    await chmod(profileDir, 0o700);
+    try {
+      const context = await chromium.launchPersistentContext(profileDir, {
+        channel: "chrome",
+        headless: false,
+        acceptDownloads: true,
+        viewport: null,
+        // Chrome suppresses password-save UI under Playwright's automation flag. The other
+        // two defaults bypass the native password store/keychain, so omit all three only for
+        // this dedicated, opt-in login profile.
+        ignoreDefaultArgs: [
+          "--enable-automation",
+          "--password-store=basic",
+          "--use-mock-keychain",
+        ],
+      });
+      return {
+        context,
+        browser: context.browser(),
+        persistent: true,
+        close: () => context.close(),
+      };
+    } catch (error) {
+      throw new Error(
+        "Unable to start the dedicated Google Chrome login profile. Install Google Chrome or run `usc-bs auth forget-password` to return to the temporary browser.",
+        { cause: error },
+      );
+    }
+  }
+
   const browser = await chromium.launch({ headless: false });
   const context = await browser.newContext({ acceptDownloads: true });
-  const page = await context.newPage();
+  return { context, browser, persistent: false, close: () => browser.close() };
+}
+
+function recordOrigin(origins: Set<string>, value: string): void {
+  try {
+    const url = new URL(value);
+    if (url.protocol === "https:" || url.protocol === "http:") origins.add(url.origin);
+  } catch {
+    // Browser-internal and incomplete navigation URLs have no site storage to clear.
+  }
+}
+
+function trackVisitedOrigins(context: BrowserContext, origins: Set<string>): void {
+  const attach = (page: import("playwright").Page) => {
+    for (const frame of page.frames()) recordOrigin(origins, frame.url());
+    page.on("framenavigated", (frame) => recordOrigin(origins, frame.url()));
+  };
+  for (const page of context.pages()) attach(page);
+  context.on("page", attach);
+}
+
+async function clearPersistentWebsiteState(
+  context: BrowserContext,
+  origins: Set<string>,
+): Promise<void> {
+  await context.clearCookies();
+  const page = context.pages()[0];
+  if (!page) return;
+  const session = await context.newCDPSession(page);
+  try {
+    for (const origin of origins) {
+      await session.send("Storage.clearDataForOrigin", { origin, storageTypes: "all" });
+    }
+  } finally {
+    await session.detach();
+  }
+}
+
+export async function loginBrowserSession(config: BrowserSessionAppConfig): Promise<void> {
+  const environment = await launchLoginEnvironment(config);
+  const { browser, context } = environment;
+  const page = context.pages()[0] || await context.newPage();
   const deadline = Date.now() + LOGIN_TIMEOUT_MS;
+  const visitedOrigins = new Set<string>();
   let disconnected = false;
-  browser.on("disconnected", () => (disconnected = true));
-  console.log("A private Chromium window has opened. Complete USC NetID and Duo there.");
+  context.on("close", () => (disconnected = true));
+  browser?.on("disconnected", () => (disconnected = true));
+  trackVisitedOrigins(context, visitedOrigins);
+  if (environment.persistent) {
+    console.log("A dedicated Google Chrome profile has opened. Complete USC NetID and Duo there.");
+    console.log("Chrome may offer to save the password. Click Save, then leave the window open;");
+    console.log("after login is verified the tool will wait briefly, clear website sessions, and close it.");
+    console.log("Do not sign this dedicated profile into a Google account.");
+  } else {
+    console.log("A private Chromium window has opened. Complete USC NetID and Duo there.");
+  }
   console.log("The CLI never reads or stores your password or Duo response.");
 
   try {
@@ -86,13 +198,24 @@ export async function loginBrowserSession(config: BrowserSessionAppConfig): Prom
         const state = await context.storageState();
         await saveBrowserSession(state, config.baseUrl);
         console.log("Brightspace session verified and encrypted locally.");
+        if (environment.persistent) {
+          console.log("If Chrome shows Save password, click it now. Closing automatically in 15 seconds…");
+          await sleep(PASSWORD_SAVE_GRACE_MS);
+          if (!disconnected) {
+            for (const entry of state.origins) recordOrigin(visitedOrigins, entry.origin);
+            await clearPersistentWebsiteState(context, visitedOrigins);
+            console.log("Website cookies and site storage were cleared from the Chrome login profile.");
+          } else {
+            console.warn("Chrome was closed early, so its website session data could not be cleared.");
+          }
+        }
         return;
       }
       await sleep(2_000);
     }
     throw new Error("Browser login timed out after 10 minutes.");
   } finally {
-    if (!disconnected) await browser.close();
+    if (!disconnected) await environment.close();
   }
 }
 
